@@ -4,6 +4,7 @@ using Kros.KORM.Query.Expressions;
 using Kros.KORM.Query.Providers;
 using Kros.Utils;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
@@ -433,6 +434,11 @@ namespace Kros.KORM.Query.Sql
         /// </returns>
         protected override Expression VisitMethodCall(MethodCallExpression exp)
         {
+            if (TryGetCollectionContainsValues(exp, out IEnumerable values, out Expression item))
+            {
+                return BindCollectionContains(exp, values, item);
+            }
+
             Expression evaluated = PartialEvaluator.Eval(exp, CanBeEvaluatedLocally);
 
             if (evaluated is ConstantExpression constantExp)
@@ -940,6 +946,91 @@ namespace Kros.KORM.Query.Sql
             }
             return result;
         }
+
+        /// <summary>
+        /// Binds the <c>Contains</c> method of a collection (for example <see cref="Enumerable.Contains{TSource}(IEnumerable{TSource}, TSource)"/>,
+        /// <see cref="List{T}.Contains(T)"/>, <see cref="HashSet{T}.Contains(T)"/>, or <c>Contains</c> called on an array)
+        /// to SQL <c>IN</c> operator. Every value of the collection is added as a separate SQL parameter.
+        /// If the collection is empty, the condition is translated to always false condition <c>(1 = 0)</c>.
+        /// </summary>
+        /// <param name="expression">The method call expression.</param>
+        /// <param name="values">Values of the collection, which are searched.</param>
+        /// <param name="item">Searched expression, usually the column.</param>
+        protected virtual Expression BindCollectionContains(MethodCallExpression expression, IEnumerable values, Expression item)
+        {
+            IEnumerator enumerator = values.GetEnumerator();
+            if (!enumerator.MoveNext())
+            {
+                LinqStringBuilder.Append("(1 = 0)");
+                return expression;
+            }
+
+            LinqStringBuilder.Append('(');
+            Visit(item);
+            LinqStringBuilder.Append(" IN (");
+            AddParameterWithValue(enumerator.Current);
+            while (enumerator.MoveNext())
+            {
+                LinqStringBuilder.Append(", ");
+                AddParameterWithValue(enumerator.Current);
+            }
+            LinqStringBuilder.Append("))");
+            return expression;
+        }
+
+        private static bool TryGetCollectionContainsValues(
+            MethodCallExpression expression,
+            out IEnumerable values,
+            out Expression item)
+        {
+            values = null;
+            item = null;
+            if (expression.Method.Name != nameof(Enumerable.Contains))
+            {
+                return false;
+            }
+
+            Expression collection;
+            if (expression.Method.IsStatic)
+            {
+                // Enumerable.Contains(source, value) and since C# 14 also MemoryExtensions.Contains(span, value),
+                // which is used when Contains is called on an array.
+                if ((expression.Arguments.Count != 2)
+                    || ((expression.Method.DeclaringType != typeof(Enumerable))
+                        && (expression.Method.DeclaringType != typeof(MemoryExtensions))))
+                {
+                    return false;
+                }
+                collection = UnwrapImplicitSpanConversion(expression.Arguments[0]);
+                item = expression.Arguments[1];
+            }
+            else
+            {
+                // Instance Contains(value) of collections (List<T>, HashSet<T>, ...), but not string.Contains.
+                if ((expression.Arguments.Count != 1) || (expression.Object.Type == typeof(string)))
+                {
+                    return false;
+                }
+                collection = expression.Object;
+                item = expression.Arguments[0];
+            }
+
+            if (!typeof(IEnumerable).IsAssignableFrom(collection.Type)
+                || (PartialEvaluator.Eval(collection) is not ConstantExpression { Value: IEnumerable collectionValues }))
+            {
+                return false;
+            }
+            values = collectionValues;
+            return true;
+        }
+
+        private static Expression UnwrapImplicitSpanConversion(Expression expression)
+            => expression switch
+            {
+                MethodCallExpression { Method.Name: "op_Implicit", Arguments.Count: 1 } call => call.Arguments[0],
+                UnaryExpression { NodeType: ExpressionType.Convert, Method.Name: "op_Implicit" } convert => convert.Operand,
+                _ => expression
+            };
 
         /// <summary>
         /// Visits the string methods.
