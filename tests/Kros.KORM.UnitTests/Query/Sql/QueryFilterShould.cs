@@ -112,6 +112,28 @@ namespace Kros.KORM.UnitTests.Query.Sql
                 1, 1000, 0, 10000);
         }
 
+        [Theory]
+        [InlineData(true, "(1 = 1)")]
+        [InlineData(false, "(1 = 0)")]
+        public void AddWhereConditionWithExternalBoolFlagToSql(bool allowAll, string expectedCondition)
+        {
+            FlagFilter.AllowAll = allowAll;
+            var query = Query<FlagFilter>();
+
+            WasGeneratedSameSql(query, $"SELECT Id, Value FROM FlagFilter WHERE (({expectedCondition} OR (Value > @__Dqf1)))", 10);
+        }
+
+        [Theory]
+        [InlineData(true, "SELECT Id, Value FROM ConditionalFilter WHERE ((1 = 1))")]
+        [InlineData(false, "SELECT Id, Value FROM ConditionalFilter WHERE ((Value > @__Dqf1))", 10)]
+        public void AddWhereConditionWithConditionalOperatorToSql(bool allowAll, string expectedSql, params object[] parameters)
+        {
+            ConditionalFilter.AllowAll = allowAll;
+            var query = Query<ConditionalFilter>();
+
+            WasGeneratedSameSql(query, expectedSql, parameters);
+        }
+
         protected override void WasGeneratedSameSql<T>(IQuery<T> query, string expectedSql, params object[] parameters)
         {
             (query.Provider as FakeQueryProvider).Execute(query);
@@ -160,11 +182,35 @@ namespace Kros.KORM.UnitTests.Query.Sql
             public int Value { get; set; }
         }
 
+        public class FlagFilter
+        {
+            public static bool AllowAll { get; set; }
+
+            public int Id { get; set; }
+
+            public int Value { get; set; }
+        }
+
+        public class ConditionalFilter
+        {
+            public static bool AllowAll { get; set; }
+
+            public int Id { get; set; }
+
+            public int Value { get; set; }
+        }
+
         public class DatabaseConfiguration : DatabaseConfigurationBase
         {
             public override void OnModelCreating(ModelConfigurationBuilder modelBuilder)
             {
                 base.OnModelCreating(modelBuilder);
+
+                modelBuilder.Table("FlagFilter")
+                    .UseQueryFilter<FlagFilter>(f => FlagFilter.AllowAll || f.Value > 10);
+
+                modelBuilder.Table("ConditionalFilter")
+                    .UseQueryFilter<ConditionalFilter>(f => ConditionalFilter.AllowAll ? true : f.Value > 10);
 
                 modelBuilder.Table("Foo")
                     .UseQueryFilter<Foo>(f => f.Value > 2);

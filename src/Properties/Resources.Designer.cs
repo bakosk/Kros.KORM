@@ -151,6 +151,15 @@ namespace Kros.KORM.Properties {
         }
         
         /// <summary>
+        ///   Looks up a localized string similar to The conditional (ternary) operator &apos;{0}&apos; is not supported. Only conditional operator, whose condition does not depend on the entity, is supported..
+        /// </summary>
+        internal static string ConditionalExpressionIsNotSupported {
+            get {
+                return ResourceManager.GetString("ConditionalExpressionIsNotSupported", resourceCulture);
+            }
+        }
+        
+        /// <summary>
         ///   Looks up a localized string similar to The configuration is not allowed if the Build method has already been called..
         /// </summary>
         internal static string ConfigurationIsNotAllowed {
