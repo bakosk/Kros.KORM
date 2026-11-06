@@ -339,6 +339,24 @@ public class DatabaseConfiguration : DatabaseConfigurationBase
 KORM will automatically add a condition `((UserId = @__Dqf1) AND (ParentId = @__Dqf2))` when calling any query using `Query<Document>()`.
 > Except for direct sql calls like `_database.Query<Document>().Sql("SELECT * FROM DOCUMENT")`.
 
+The filter can depend on values which are not columns of the entity (static properties, values of other objects, ...).
+These values are evaluated every time the query is executed. Boolean value is translated to always true `(1 = 1)`
+or always false `(1 = 0)` condition and conditional (ternary) operator is translated only to the selected branch:
+
+```CSharp
+modelBuilder.Table("Document")
+    .UseQueryFilter<Document>(entity => ActiveUser.IsAdmin || entity.UserId == ActiveUser.Id);
+// IsAdmin = true:  WHERE (((1 = 1) OR (UserId = @__Dqf1)))
+// IsAdmin = false: WHERE (((1 = 0) OR (UserId = @__Dqf1)))
+
+modelBuilder.Table("Document")
+    .UseQueryFilter<Document>(entity => ActiveUser.IsAdmin ? true : entity.UserId == ActiveUser.Id);
+// IsAdmin = true:  WHERE ((1 = 1))
+// IsAdmin = false: WHERE ((UserId = @__Dqf1))
+```
+
+> The condition of conditional operator must not depend on the entity. For example `entity.Value > 5 ? ... : ...` is not supported.
+
 > :warning: Configuration `modelBuilder.Table("Documents")` is applied for all entities mapped to table `Documents` (for example `Document`, `DocumentDto`, `DocumentInfo`, ...).
 
 #### Ignoring global filters

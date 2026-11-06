@@ -28,6 +28,16 @@ namespace Kros.KORM.Query.Sql
         /// </summary>
         protected const string SqlFalse = "0";
 
+        /// <summary>
+        /// SQL condition which is always <see langword="true"/>.
+        /// </summary>
+        protected const string SqlTrueCondition = "(1 = 1)";
+
+        /// <summary>
+        /// SQL condition which is always <see langword="false"/>.
+        /// </summary>
+        protected const string SqlFalseCondition = "(1 = 0)";
+
         private const string VbOperatorsClassName = "Microsoft.VisualBasic.CompilerServices.Operators";
         private const string VbEmbeddedOperatorsClassName = "Microsoft.VisualBasic.CompilerServices.EmbeddedOperators";
 
@@ -91,7 +101,7 @@ namespace Kros.KORM.Query.Sql
             LinqStringBuilder = new StringBuilder();
             MemberExpressionStack.Clear();
 
-            Visit(whereExpression);
+            VisitCondition(whereExpression is LambdaExpression lambda ? lambda.Body : whereExpression);
 
             return new WhereExpression(LinqStringBuilder.ToString(), LinqParameters.GetParams());
         }
@@ -347,11 +357,18 @@ namespace Kros.KORM.Query.Sql
             LinqStringBuilder.AppendFormat("({0} {1} {2})", GetColumnNameFromMember(node), op, value ? SqlTrue : SqlFalse);
         }
 
+        private static bool IsEntityMember(MemberExpression node)
+            => (node.Expression is not null)
+                && ((node.Expression.NodeType == ExpressionType.Parameter)
+                    || (node.Expression.NodeType == ExpressionType.Convert));
+
         private static bool IsBooleanPropertyExpression(Expression node)
         {
             if ((node is MemberExpression memberExp) && (memberExp.Member is PropertyInfo propInfo))
             {
-                return propInfo.PropertyType == typeof(bool);
+                // Only property of the entity (lambda parameter) is a column. Static properties and properties
+                // of other objects (for example captured variables) are values, not columns.
+                return (propInfo.PropertyType == typeof(bool)) && IsEntityMember(memberExp);
             }
             return false;
         }
@@ -703,7 +720,7 @@ namespace Kros.KORM.Query.Sql
         protected virtual Expression VisitWhere(MethodCallExpression expression)
         {
             LambdaExpression lambda = (LambdaExpression)StripQuotes(expression.Arguments[1]);
-            Visit(lambda.Body);
+            VisitCondition(lambda.Body);
 
             SelectExpression.SetWhereExpression(new WhereExpression(LinqStringBuilder.ToString(), LinqParameters.GetParams()));
             LinqParameters.Clear();
@@ -745,7 +762,7 @@ namespace Kros.KORM.Query.Sql
                     else
                     {
                         LinqStringBuilder.Append(" NOT ");
-                        Visit(expression.Operand);
+                        VisitCondition(expression.Operand);
                     }
                     break;
                 case ExpressionType.Convert:
@@ -789,9 +806,95 @@ namespace Kros.KORM.Query.Sql
                     AppendMemberColumnName((MemberExpression)operand);
                 }
             }
+            else if (hasBooleanOperator)
+            {
+                VisitCondition(operand);
+            }
             else
             {
                 Visit(operand);
+            }
+        }
+
+        /// <summary>
+        /// Visits the expression, which is used as a condition (for example body of <c>Where</c>, operand of logical
+        /// operator <c>AND</c>, <c>OR</c>, or <c>NOT</c>).
+        /// <list type="bullet">
+        /// <item>Boolean expression, which does not depend on the entity (local variable, static property, literal),
+        /// is evaluated and translated to always true <c>(1 = 1)</c> or always false <c>(1 = 0)</c> condition.</item>
+        /// <item>Conditional (ternary) operator, which condition does not depend on the entity, is evaluated
+        /// and only the selected branch is translated.</item>
+        /// </list>
+        /// </summary>
+        /// <param name="expression">The condition expression.</param>
+        protected virtual void VisitCondition(Expression expression)
+        {
+            if ((expression.Type == typeof(bool)) && TryEvaluateLocally(expression, out object value))
+            {
+                LinqStringBuilder.Append((bool)value ? SqlTrueCondition : SqlFalseCondition);
+            }
+            else if ((expression is ConditionalExpression conditional)
+                && TryEvaluateLocally(conditional.Test, out object test))
+            {
+                VisitCondition((bool)test ? conditional.IfTrue : conditional.IfFalse);
+            }
+            else
+            {
+                Visit(expression);
+            }
+        }
+
+        /// <summary>
+        /// Visits the conditional (ternary) operator. Only conditional operator, which condition does not depend
+        /// on the entity is supported. The condition is evaluated and only the selected branch is translated.
+        /// </summary>
+        /// <param name="node">The conditional expression.</param>
+        /// <exception cref="NotSupportedException">If the condition depends on the entity.</exception>
+        protected override Expression VisitConditional(ConditionalExpression node)
+        {
+            if (TryEvaluateLocally(node.Test, out object test))
+            {
+                Visit((bool)test ? node.IfTrue : node.IfFalse);
+                return node;
+            }
+            throw new NotSupportedException(string.Format(Resources.ConditionalExpressionIsNotSupported, node));
+        }
+
+        private bool TryEvaluateLocally(Expression expression, out object value)
+        {
+            if (expression is ConstantExpression constantExpression)
+            {
+                value = constantExpression.Value;
+                return true;
+            }
+            // Cheap check first, so the expression is not compiled, if it depends on the entity.
+            if (!ParameterFinder.ContainsParameter(expression)
+                && (PartialEvaluator.Eval(expression, CanBeEvaluatedLocally) is ConstantExpression constant))
+            {
+                value = constant.Value;
+                return true;
+            }
+            value = null;
+            return false;
+        }
+
+        private sealed class ParameterFinder : ExpressionVisitor
+        {
+            private bool _found;
+
+            public static bool ContainsParameter(Expression expression)
+            {
+                var finder = new ParameterFinder();
+                finder.Visit(expression);
+                return finder._found;
+            }
+
+            public override Expression Visit(Expression node) => _found ? node : base.Visit(node);
+
+            protected override Expression VisitParameter(ParameterExpression node)
+            {
+                _found = true;
+                return node;
             }
         }
 
@@ -924,9 +1027,7 @@ namespace Kros.KORM.Query.Sql
         /// <exception cref="System.NotSupportedException">If the member type is not supported.</exception>
         protected override Expression VisitMember(MemberExpression expression)
         {
-            if (expression.Expression != null &&
-                (expression.Expression.NodeType == ExpressionType.Parameter ||
-                 expression.Expression.NodeType == ExpressionType.Convert))
+            if (IsEntityMember(expression))
             {
                 AppendMemberColumnName(expression);
                 return expression;

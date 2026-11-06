@@ -42,5 +42,17 @@ INSERT INTO [Foo] VALUES (4);";
                 Assert.Equal(0, sum);
             }
         }
+
+        [Theory]
+        [InlineData(true, 4)]
+        [InlineData(false, 1)]
+        public void QueryShouldTranslateExternalBoolFlag(bool allowAll, int expectedCount)
+        {
+            using (IDatabase korm = CreateDatabase(CreateTable_FooTable, InsertIntoFooScript))
+            {
+                Assert.Equal(expectedCount, korm.Query<Foo>().Where(p => allowAll || p.Id == 1).ToList().Count);
+                Assert.Equal(expectedCount, korm.Query<Foo>().Where(p => allowAll ? true : p.Id == 1).ToList().Count);
+            }
+        }
     }
 }
