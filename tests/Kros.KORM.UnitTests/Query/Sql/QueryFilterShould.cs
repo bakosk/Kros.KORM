@@ -112,6 +112,17 @@ namespace Kros.KORM.UnitTests.Query.Sql
                 1, 1000, 0, 10000);
         }
 
+        [Fact]
+        public void AddWhereConditionWithInOperatorToSql()
+        {
+            var query = Query<InFilter>();
+
+            WasGeneratedSameSql(
+                query,
+                "SELECT Id, NumberingSequence FROM InFilter WHERE ((NumberingSequence IN (@__Dqf1, @__Dqf2)))",
+                "of1", "of2");
+        }
+
         protected override void WasGeneratedSameSql<T>(IQuery<T> query, string expectedSql, params object[] parameters)
         {
             (query.Provider as FakeQueryProvider).Execute(query);
@@ -160,11 +171,23 @@ namespace Kros.KORM.UnitTests.Query.Sql
             public int Value { get; set; }
         }
 
+        public class InFilter
+        {
+            public int Id { get; set; }
+
+            public string NumberingSequence { get; set; }
+        }
+
         public class DatabaseConfiguration : DatabaseConfigurationBase
         {
+            private static readonly string[] _allowedSequences = ["of1", "of2"];
+
             public override void OnModelCreating(ModelConfigurationBuilder modelBuilder)
             {
                 base.OnModelCreating(modelBuilder);
+
+                modelBuilder.Table("InFilter")
+                    .UseQueryFilter<InFilter>(f => _allowedSequences.Contains(f.NumberingSequence));
 
                 modelBuilder.Table("Foo")
                     .UseQueryFilter<Foo>(f => f.Value > 2);

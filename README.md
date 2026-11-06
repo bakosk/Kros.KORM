@@ -146,6 +146,18 @@ You can use also some string functions in Linq queries:
 | Trim            | Where(p => p.FirstName.Trim() == "John")              | WHERE (RTRIM(LTRIM(FirstName)) = @1)                                                |
 | Compare         | Where(p => string.Compare(p.FirstName, "John") == 0)  | WHERE (CASE WHEN FirstName = @1 THEN 0 WHEN FirstName < @2 THEN -1 ELSE 1 END = @3) |
 
+You can use `Contains` method of a collection (`List<T>`, `HashSet<T>`, array, `IEnumerable<T>`, ...) to filter by a list of values. It is translated to the SQL `IN` operator:
+
+| Example                         | Translation to T-SQL             |
+| ------------------------------- | -------------------------------- |
+| Where(p => ids.Contains(p.Id))  | WHERE (Id IN (@1, @2, @3))       |
+| Where(p => !ids.Contains(p.Id)) | WHERE (NOT (Id IN (@1, @2, @3))) |
+
+* The collection is evaluated when the query is translated and every value is passed as a separate SQL parameter. SQL Server allows at most 2100 parameters in one command, so for large lists use `ExecuteWithTempTable` instead.
+* If the collection is empty, the condition is translated to `(1 = 0)` (no rows match).
+* `null` values in the collection are passed as standard SQL parameters. As in SQL, `Column IN (NULL)` does not match rows where `Column` is `NULL`.
+* It can be used also in the [global query filter](#Global-query-filter).
+
 Translation is provided by implementation of [ISqlExpressionVisitor](https://kros-sk.github.io/Kros.Libs.Documentation/api/Kros.KORM.Query.Sql.ISqlExpressionVisitor.html).
 
 ### DataAnnotation attributes
@@ -337,6 +349,13 @@ public class DatabaseConfiguration : DatabaseConfigurationBase
 ```
 
 KORM will automatically add a condition `((UserId = @__Dqf1) AND (ParentId = @__Dqf2))` when calling any query using `Query<Document>()`.
+
+Query filter can also filter by a list of values using `Contains`, which is translated to SQL `IN`:
+
+```CSharp
+modelBuilder.Table("Document")
+    .UseQueryFilter<Document>(entity => AllowedSequences.Contains(entity.NumberingSequence));
+```
 > Except for direct sql calls like `_database.Query<Document>().Sql("SELECT * FROM DOCUMENT")`.
 
 > :warning: Configuration `modelBuilder.Table("Documents")` is applied for all entities mapped to table `Documents` (for example `Document`, `DocumentDto`, `DocumentInfo`, ...).
